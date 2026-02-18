@@ -346,6 +346,9 @@
             (println "Error: config.edn not found")
             (System/exit 1))
         config (load-config config-path)
+        _ (when-not (:secrets config)
+            (println "Error: secrets.edn not found (copy from secrets.edn.example)")
+            (System/exit 1))
         [cmd & cmd-args] args]
     (case cmd
       "up"           (cmd-up config)
