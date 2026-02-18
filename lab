@@ -244,6 +244,75 @@
                     (when (:schedule v) (str " [cron: " (:schedule v) "]")))))))
 
 ;; =============================================================================
+;; Schedule (crontab management)
+;; =============================================================================
+
+(defn generate-crontab-entries
+  "Generate crontab entries for scheduled integrations"
+  [config]
+  (let [dir (System/getProperty "user.dir")]
+    (->> (:integrations config)
+         (filter (fn [[_ v]] (:schedule v)))
+         (mapcat (fn [[k v]]
+                   [(str "# lab:" (name k))
+                    (str (:schedule v) " cd " dir " && ./lab run " (name k))])))))
+
+(defn get-crontab
+  "Get current user crontab, empty string if none"
+  []
+  (let [result (shell {:out :string :err :string :continue true} "crontab" "-l")]
+    (if (zero? (:exit result))
+      (:out result)
+      "")))
+
+(defn remove-lab-entries
+  "Remove lab-managed entries from crontab string"
+  [crontab-str]
+  (let [lines (str/split-lines crontab-str)]
+    (->> lines
+         (partition-all 2 1)
+         (remove (fn [[line _]] (str/starts-with? (or line "") "# lab:")))
+         (map first)
+         (remove (fn [line] (and line (re-find #"&& \./lab run " line))))
+         (str/join "\n"))))
+
+(defn cmd-schedule [config subcmd]
+  (let [entries (generate-crontab-entries config)]
+    (case subcmd
+      "show"
+      (if (seq entries)
+        (doseq [line entries] (println line))
+        (println "No scheduled integrations found"))
+
+      "install"
+      (if (seq entries)
+        (let [current (get-crontab)
+              cleaned (remove-lab-entries current)
+              new-crontab (str (str/trim cleaned)
+                               (when (seq (str/trim cleaned)) "\n")
+                               (str/join "\n" entries) "\n")]
+          (shell {:in new-crontab} "crontab" "-")
+          (println "Installed crontab entries:")
+          (doseq [line entries] (println (str "  " line))))
+        (println "No scheduled integrations to install"))
+
+      "remove"
+      (let [current (get-crontab)
+            cleaned (remove-lab-entries current)]
+        (if (= current cleaned)
+          (println "No lab entries found in crontab")
+          (do
+            (shell {:in (str cleaned "\n")} "crontab" "-")
+            (println "Removed lab entries from crontab"))))
+
+      ;; default
+      (do
+        (println "Usage: ./lab schedule <show|install|remove>")
+        (println "  show    - Print crontab entries (dry run)")
+        (println "  install - Install entries to crontab")
+        (println "  remove  - Remove lab entries from crontab")))))
+
+;; =============================================================================
 ;; Help
 ;; =============================================================================
 
@@ -258,8 +327,9 @@
   (println "  logs      Follow service logs")
   (println "")
   (println "Integrations:")
-  (println "  run <name>    Run an integration")
-  (println "  integrations  List available integrations")
+  (println "  run <name>        Run an integration")
+  (println "  integrations      List available integrations")
+  (println "  schedule <cmd>    Manage cron (show|install|remove)")
   (println "")
   (println "Usage: ./lab <command> [args]"))
 
@@ -285,6 +355,7 @@
       "logs"         (apply cmd-logs config cmd-args)
       "run"          (cmd-run config (first cmd-args))
       "integrations" (cmd-list-integrations config)
+      "schedule"     (cmd-schedule config (first cmd-args))
       "help"         (cmd-help)
       nil            (cmd-help)
       (do (println "Unknown command:" cmd)
