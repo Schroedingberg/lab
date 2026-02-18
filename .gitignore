@@ -1,0 +1,6 @@
+# Secrets (never commit)
+secrets.edn
+
+# Editor
+.nrepl-port
+.cpcache/

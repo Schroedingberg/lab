@@ -1,0 +1,66 @@
+;; lab-orchestrator config
+;; Single source of truth for your homelab infrastructure
+
+{;; Secrets (gitignored - copy from secrets.edn.example)
+ :secrets #include "secrets.edn"
+
+ ;; ==========================================================================
+ ;; Services - becomes docker-compose.yml
+ ;; ==========================================================================
+ :services
+ {:mealie
+  {:image "ghcr.io/mealie-recipes/mealie:v3.10.2"
+   :ports ["9925:9000"]
+   :volumes ["mealie-data:/app/data"]
+   :env {:ALLOW_SIGNUP "false"
+         :PUID "1000"
+         :PGID "1000"
+         :TZ "Europe/Berlin"
+         :BASE_URL #ref [:secrets :mealie-url]}
+   :restart "unless-stopped"}
+
+  :donetick
+  {:image "donetick/donetick"
+   :ports ["2021:2021"]
+   :volumes ["donetick-data:/donetick-data"
+             "donetick-config:/config"]
+   :env {:DT_ENV "selfhosted"
+         :DT_SQLITE_PATH "/donetick-data/donetick.db"
+         :DT_JWT_SECRET #ref [:secrets :donetick :jwt-secret]
+         :TZ "Europe/Berlin"}
+   :restart "unless-stopped"}}
+
+ ;; ==========================================================================
+ ;; Integrations - automations between services
+ ;; ==========================================================================
+ ;; Two types:
+ ;;   1. :type :http-call  - Simple HTTP request (defined in EDN)
+ ;;   2. :handler "path"   - Complex logic (Clojure code)
+ ;;
+ ;; Run manually: ./lab run <name>
+ ;; Or via cron:  0 23 * * 5 /opt/lab/lab run mealie-weekly-list
+
+ :integrations
+ {;; Simple: just an HTTP call (good for webhooks, simple API calls)
+  :mealie-simple-list
+  {:type :http-call
+   :description "Create a shopping list (simple HTTP version)"
+   :schedule "0 23 * * 5"
+   :action
+   {:method :post
+    :url #join [#ref [:secrets :mealie-url] "/api/groups/shopping/lists"]
+    :headers {:Authorization #join ["Bearer " #ref [:secrets :mealie-token]]
+              :Content-Type "application/json"}
+    :body {:name #join ["Week of " :current-date]}}}
+
+  ;; Complex: loads Clojure code (good for multi-step, conditional logic)
+  :mealie-weekly-list
+  {:handler "integrations/mealie.clj"
+   :description "Create shopping list from this week's meal plan"
+   :schedule "0 23 * * 5"}
+
+  ;; Cross-service: Mealie -> Donetick
+  :meal-prep-reminder
+  {:handler "integrations/meal-prep-reminder.clj"
+   :description "Create prep reminders for tomorrow's meals (e.g., defrost fish)"
+   :schedule "0 8 * * *"}}}

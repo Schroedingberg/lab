@@ -1,0 +1,295 @@
+#!/usr/bin/env bb
+
+;; lab - homelab orchestrator
+;; Single source of truth for services + integrations
+
+(ns lab
+  (:require [babashka.fs :as fs]
+            [babashka.process :refer [shell process]]
+            [babashka.http-client :as http]
+            [cheshire.core :as json]
+            [clojure.edn :as edn]
+            [clojure.string :as str]
+            [clj-yaml.core :as yaml]))
+
+;; =============================================================================
+;; Config Loading (aero-lite)
+;; =============================================================================
+
+(declare resolve-refs)
+
+(defn read-include [base-path file]
+  (let [path (fs/path (fs/parent base-path) file)]
+    (when (fs/exists? path)
+      (edn/read-string (slurp (str path))))))
+
+(defn resolve-ref [config path]
+  (get-in config path))
+
+(defn resolve-env [k]
+  (System/getenv (name k)))
+
+(defn resolve-join [config parts]
+  (str/join "" (map #(if (vector? %) (resolve-refs config %) %) parts)))
+
+(defn resolve-refs
+  "Recursively resolve #ref, #env, #join tags in config"
+  [config data]
+  (cond
+    (map? data)
+    (into {} (map (fn [[k v]] [k (resolve-refs config v)]) data))
+
+    (sequential? data)
+    (cond
+      (= :ref (first data))   (resolve-ref config (second data))
+      (= :env (first data))   (resolve-env (second data))
+      (= :join (first data))  (resolve-join config (rest data))
+      :else (mapv #(resolve-refs config %) data))
+
+    :else data))
+
+(defn load-config
+  "Load config.edn with includes and refs resolved"
+  ([] (load-config "config.edn"))
+  ([path]
+   (let [readers {'include (partial read-include path)
+                  'ref (fn [p] [:ref p])
+                  'env (fn [k] [:env k])
+                  'join (fn [& parts] (into [:join] parts))}
+         raw (edn/read-string {:readers readers} (slurp path))]
+     (resolve-refs raw raw))))
+
+;; =============================================================================
+;; HTTP Helpers (curl-based workaround for bb.http-client quirks)
+;; =============================================================================
+
+(defn curl-post
+  "POST JSON via curl. Returns {:status <int> :body <string>}"
+  [url headers body-map]
+  (let [body-json (json/encode body-map)
+        header-args (mapcat (fn [[k v]] ["-H" (str k ": " v)]) headers)
+        args (concat ["curl" "-s" "-X" "POST" url]
+                     header-args
+                     ["-d" body-json])
+        result (apply shell {:out :string :err :string :continue true} args)]
+    {:status (if (zero? (:exit result)) 200 400)
+     :body (:out result)}))
+
+(defn curl-get
+  "GET via curl. Returns {:status <int> :body <string>}"
+  [url headers]
+  (let [header-args (mapcat (fn [[k v]] ["-H" (str k ": " v)]) headers)
+        args (concat ["curl" "-s" url] header-args)
+        result (apply shell {:out :string :err :string :continue true} args)]
+    {:status (if (zero? (:exit result)) 200 400)
+     :body (:out result)}))
+
+(defn wait-for-service
+  "Wait for a service to be ready by polling an endpoint.
+   Returns true when ready, throws after max-attempts."
+  [url max-attempts delay-ms]
+  (loop [attempt 1]
+    (when (> attempt max-attempts)
+      (throw (ex-info "Service not ready" {:url url :attempts max-attempts})))
+    (let [ready? (try
+                   (let [resp (http/request {:method :get :uri url :throw false})]
+                     (<= 200 (:status resp) 499))
+                   (catch Exception _ false))]
+      (if ready?
+        (do (println (str "  ✓ " url)) true)
+        (do
+          (print (str "  Waiting (" attempt "/" max-attempts ")... "))
+          (flush)
+          (Thread/sleep delay-ms)
+          (recur (inc attempt)))))))
+
+;; =============================================================================
+;; EDN -> Docker Compose YAML
+;; =============================================================================
+
+(defn service->compose
+  "Transform a service definition to compose format"
+  [[k v]]
+  [(name k)
+   (cond-> {}
+     (:image v)      (assoc :image (:image v))
+     (:ports v)      (assoc :ports (:ports v))
+     (:volumes v)    (assoc :volumes (:volumes v))
+     (:tmpfs v)      (assoc :tmpfs (:tmpfs v))
+     (:env v)        (assoc :environment
+                            (into {} (map (fn [[ek ev]] [(name ek) ev]) (:env v))))
+     (:restart v)    (assoc :restart (:restart v))
+     (:labels v)     (assoc :labels (:labels v))
+     (:depends-on v) (assoc :depends_on (:depends-on v))
+     (:networks v)   (assoc :networks (:networks v)))])
+
+(defn generate-compose
+  "Generate docker-compose.yml content from config"
+  [config]
+  (let [services (into {} (map service->compose (:services config)))]
+    (cond-> {}
+      (seq services) (assoc :services services))))
+
+(defn config->yaml
+  "Generate docker-compose YAML string from config"
+  [config]
+  (yaml/generate-string (generate-compose config) :dumper-options {:flow-style :block}))
+
+;; =============================================================================
+;; Docker Compose Commands
+;; =============================================================================
+
+(defn compose!
+  "Run docker compose with generated YAML piped via stdin"
+  [config & args]
+  (let [yaml-str (config->yaml config)]
+    (apply shell {:in yaml-str} "docker" "compose" "-f" "-" args)))
+
+(defn cmd-up [config]
+  (println "Starting services...")
+  (compose! config "up" "-d"))
+
+(defn cmd-down [config]
+  (println "Stopping services...")
+  (compose! config "down"))
+
+(defn cmd-status [config]
+  (compose! config "ps"))
+
+(defn cmd-plan [config]
+  (println "Generated docker-compose.yml (ephemeral - never written to disk):")
+  (println "---")
+  (println (config->yaml config))
+  (println "---")
+  (println "\nRun './lab up' to apply."))
+
+(defn cmd-logs [config & args]
+  (apply compose! config "logs" "-f" args))
+
+;; =============================================================================
+;; Integrations
+;; =============================================================================
+
+(defn format-date
+  "Format current date for use in integration templates"
+  []
+  (let [now (java.time.LocalDate/now)
+        fmt (java.time.format.DateTimeFormatter/ofPattern "MMM d, yyyy")]
+    (.format now fmt)))
+
+(defn interpolate-body
+  "Replace :current-date and other template values in body"
+  [body]
+  (clojure.walk/postwalk
+   (fn [x]
+     (case x
+       :current-date (format-date)
+       x))
+   body))
+
+(defn run-http-integration!
+  "Execute an HTTP-based integration"
+  [{:keys [action]}]
+  (let [{:keys [method url headers body]} action
+        body (when body (json/encode (interpolate-body body)))]
+    (println (str "  " (str/upper-case (name method)) " " url))
+    (let [resp (http/request
+                {:method method
+                 :uri url
+                 :headers (into {} (map (fn [[k v]] [(name k) v]) headers))
+                 :body body})]
+      (if (<= 200 (:status resp) 299)
+        (do (println "  OK") :ok)
+        (do (println "  FAILED:" (:status resp)) :error)))))
+
+(defn load-handler
+  "Load a Clojure file and return the handler function.
+   The file should evaluate to a function that takes config as argument."
+  [handler-path]
+  (when (fs/exists? handler-path)
+    (load-file handler-path)))
+
+(defn run-code-integration!
+  "Execute a code-based integration (loads .clj file)"
+  [config integration]
+  (let [handler-path (:handler integration)]
+    (if-let [handler-fn (load-handler handler-path)]
+      (do
+        (println (str "  Loading: " handler-path))
+        (handler-fn config))
+      (do
+        (println (str "  ERROR: Handler not found: " handler-path))
+        :error))))
+
+(defn cmd-run [config integration-name]
+  (if-let [integration (get-in config [:integrations (keyword integration-name)])]
+    (do
+      (println (str "Running integration: " integration-name))
+      (cond
+        (:handler integration)             (run-code-integration! config integration)
+        (= :http-call (:type integration)) (run-http-integration! integration)
+        :else (println "Unknown integration type - needs :handler or :type :http-call")))
+    (do
+      (println "Unknown integration:" integration-name)
+      (println "Available:" (str/join ", " (map name (keys (:integrations config))))))))
+
+(defn cmd-list-integrations [config]
+  (println "Available integrations:")
+  (doseq [[k v] (:integrations config)]
+    (let [type-str (cond
+                     (:handler v) (str "code (" (:handler v) ")")
+                     (:type v)    (name (:type v))
+                     :else        "unknown")]
+      (println (str "  " (name k) " - " type-str
+                    (when (:schedule v) (str " [cron: " (:schedule v) "]")))))))
+
+;; =============================================================================
+;; Help
+;; =============================================================================
+
+(defn cmd-help []
+  (println "lab - homelab orchestrator")
+  (println "")
+  (println "Infrastructure:")
+  (println "  up        Start services")
+  (println "  down      Stop all services")
+  (println "  status    Show running services")
+  (println "  plan      Show generated docker-compose.yml (dry-run)")
+  (println "  logs      Follow service logs")
+  (println "")
+  (println "Integrations:")
+  (println "  run <name>    Run an integration")
+  (println "  integrations  List available integrations")
+  (println "")
+  (println "Usage: ./lab <command> [args]"))
+
+;; =============================================================================
+;; Main
+;; =============================================================================
+
+(defn -main [& args]
+  (let [config-path (cond
+                      (fs/exists? "config.edn")    "config.edn"
+                      (fs/exists? "v2/config.edn") "v2/config.edn"
+                      :else nil)
+        _ (when-not config-path
+            (println "Error: config.edn not found")
+            (System/exit 1))
+        config (load-config config-path)
+        [cmd & cmd-args] args]
+    (case cmd
+      "up"           (cmd-up config)
+      "down"         (cmd-down config)
+      "status"       (cmd-status config)
+      "plan"         (cmd-plan config)
+      "logs"         (apply cmd-logs config cmd-args)
+      "run"          (cmd-run config (first cmd-args))
+      "integrations" (cmd-list-integrations config)
+      "help"         (cmd-help)
+      nil            (cmd-help)
+      (do (println "Unknown command:" cmd)
+          (cmd-help)
+          (System/exit 1)))))
+
+(when (= *file* (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))
