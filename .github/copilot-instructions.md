@@ -126,18 +126,18 @@ The current tool works but lacks clear documentation. Create docs following [Div
 
 ---
 
-**Phase 1: Built-in Scheduler (`./lab serve`)**
+**Phase 1: Crontab Generation (`./lab schedule`)**
 
-Replace external cron with built-in scheduler. Simpler deployment, single process.
+Leverage system cron instead of adding a scheduler dependency. Generate crontab entries from config.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ./lab serve                              │
+│                    ./lab schedule install                   │
 ├─────────────────────────────────────────────────────────────┤
 │  1. Load config.edn                                         │
-│  2. Start chime scheduler for each integration with         │
-│     :schedule field (cron syntax)                           │
-│  3. Block on signal, graceful shutdown                      │
+│  2. For each integration with :schedule field               │
+│  3. Generate crontab entry: "<schedule> cd <dir> && ./lab run <name>" │
+│  4. Install to user crontab (crontab -l | ... | crontab -)  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -146,34 +146,40 @@ Config example:
 :integrations
 {:meal-prep-reminder
  {:handler "integrations/meal-prep-reminder.clj"
-  :schedule "0 8 * * *"}}   ; <-- chime reads this
+  :schedule "0 8 * * *"}}   ; <-- cron syntax
 ```
 
+**Commands:**
+- `./lab schedule install` - Install crontab entries for all integrations with `:schedule`
+- `./lab schedule show` - Print what would be installed (dry run)
+- `./lab schedule remove` - Remove lab-managed crontab entries
+
 **Implementation:**
-- Use `chime.core` (already in bb.edn)
-- Parse cron expressions → chime schedule
-- Run handler at scheduled times
-- Structured logging (mulog or println)
+- Parse `:schedule` from each integration in config
+- Generate crontab lines with full paths (resolve `$PWD`)
+- Use marker comments to identify lab-managed entries: `# lab:meal-prep-reminder`
+- Merge with existing user crontab (preserve non-lab entries)
+- Print installed entries for visibility
 
 **Acceptance criteria:**
-- `./lab serve` runs continuously
-- Handlers execute at scheduled times
-- SIGTERM/SIGINT graceful shutdown
-- Systemd unit file in docs
+- `./lab schedule install` adds entries to user crontab
+- `./lab schedule show` prints entries without modifying crontab
+- `./lab schedule remove` cleans up only lab-managed entries
+- Entries use absolute paths and work from any directory
 
 ---
 
-**Phase 2: Polling-based Events**
+**Phase 2: Polling-based Events (`./lab watch`)**
 
-Detect changes by polling service APIs. Good for services without webhooks.
+Detect changes by polling service APIs. Good for services without webhooks. Requires a long-running process.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ./lab serve                              │
+│                    ./lab watch                              │
 ├─────────────────────────────────────────────────────────────┤
-│  Scheduler:  time-based triggers (Phase 1)                  │
 │  Poller:     check services every N minutes                 │
 │              detect changes, trigger handlers               │
+│              (time-based triggers still use cron)           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -202,16 +208,15 @@ Config example:
 
 ---
 
-**Phase 3: Webhook Receiver (Optional)**
+**Phase 3: Webhook Receiver (Optional, `./lab watch`)**
 
-For services that support webhooks (Mealie does via "Notifiers").
+For services that support webhooks (Mealie does via "Notifiers"). Extends Phase 2's long-running process.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ./lab serve                              │
+│                    ./lab watch                              │
 ├─────────────────────────────────────────────────────────────┤
-│  Scheduler:  time-based triggers                            │
-│  Poller:     polling-based events                           │
+│  Poller:     polling-based events (Phase 2)                 │
 │  HTTP:       POST /webhook/:integration-name                │
 │              receives payload, calls handler                │
 └─────────────────────────────────────────────────────────────┘
@@ -242,7 +247,7 @@ Config example:
 
 | Requirement | Babashka Support | Notes |
 |-------------|------------------|-------|
-| Chime scheduler | ✅ Yes | `chime.core` works in bb |
+| Shell/crontab | ✅ Yes | `shell/sh` for crontab commands |
 | HTTP server | ✅ Yes | `org.httpkit.server` or ring |
 | Background threads | ✅ Yes | `future`, `core.async` limited |
 | File-based state | ✅ Yes | EDN read/write |
@@ -257,16 +262,15 @@ Config example:
 | Phase | Effort | Value | Priority |
 |-------|--------|-------|----------|
 | 2A: Documentation | Low | High | **Do first** |
-| Phase 1: `./lab serve` + scheduler | Medium | High | **Do second** |
+| Phase 1: `./lab schedule` | Low | High | **Do second** |
 | Phase 2: Polling | Medium | Medium | Nice to have |
 | Phase 3: Webhooks | High | Medium | Future |
 
 **Acceptance criteria for Phase 1:**
-- `./lab serve` command exists
-- Reads `:schedule` from config, runs handlers on time
-- Stays running until SIGTERM
-- Systemd unit file provided
-- E2E test: start serve, wait for scheduled run, verify
+- `./lab schedule install` adds crontab entries
+- `./lab schedule show` prints entries (dry run)
+- `./lab schedule remove` cleans up lab entries
+- Integration test: install, verify crontab contains entry, remove
 
 ---
 

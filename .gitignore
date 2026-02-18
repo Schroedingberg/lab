@@ -4,3 +4,4 @@ secrets.edn
 # Editor
 .nrepl-port
 .cpcache/
+.clj-kondo/*

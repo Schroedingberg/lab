@@ -173,11 +173,24 @@ Run: `./lab run meal-prep-reminder`
 | `:image` | Docker image |
 | `:ports` | Port mappings `["host:container"]` |
 | `:volumes` | Volume mounts |
+| `:tmpfs` | Tmpfs mounts |
 | `:env` | Environment variables (map) |
 | `:restart` | Restart policy |
 | `:labels` | Docker labels |
 | `:depends-on` | Service dependencies |
 | `:networks` | Networks to join |
+
+### Integration Options
+
+| Key | Description |
+|-----|-------------|
+| `:handler` | Path to Clojure handler file (for complex logic) |
+| `:type` | `:http-call` for simple HTTP integrations |
+| `:description` | Human-readable description |
+| `:schedule` | Cron expression (display only, use crontab to schedule) |
+| `:action` | HTTP action: `{:method :url :headers :body}` |
+
+Body templates: Use `:current-date` in `:body` for "Feb 18, 2026" format.
 
 ### EDN Tags
 
