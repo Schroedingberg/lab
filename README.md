@@ -91,6 +91,20 @@ crontab -e
 # Add: 0 8 * * * /opt/lab/lab run meal-prep-reminder
 ```
 
+## Documentation
+
+Full documentation in [`docs/`](docs/README.md):
+
+- **[Tutorial](docs/tutorial-first-integration.md)** - Set up from scratch, run your first integration
+- **How-to Guides:**
+  - [Run on Schedule](docs/howto-run-on-schedule.md) - Cron and systemd timers
+  - [Write an Integration](docs/howto-write-integration.md) - Create your own automation
+  - [Deploy to Server](docs/howto-deploy.md) - Production deployment
+- **Reference:**
+  - [Configuration](docs/reference-config.md) - Full config.edn schema
+  - [CLI Commands](docs/reference-cli.md) - All commands
+- **[Architecture](docs/explanation-architecture.md)** - Design decisions and tradeoffs
+
 ## Testing
 
 ```bash
