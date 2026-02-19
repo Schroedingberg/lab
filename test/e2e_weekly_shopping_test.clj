@@ -18,7 +18,7 @@
             [clojure.string :as str]))
 
 ;; Load lab namespace
-(load-file "lab")
+(load-file "lab.bb")
 
 ;; =============================================================================
 ;; Test Configuration

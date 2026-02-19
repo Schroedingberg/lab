@@ -1,2 +1,24 @@
-{:deps {clj-commons/clj-yaml {:mvn/version "1.0.27"}
-        cheshire/cheshire {:mvn/version "5.13.0"}}}
+{:paths ["."]
+ :deps {clj-commons/clj-yaml {:mvn/version "1.0.27"}
+        cheshire/cheshire {:mvn/version "5.13.0"}}
+ :tasks
+ {:requires ([lab :as l])
+  :init (def config (l/load-config))
+
+  up           {:doc "Start services"
+                :task (l/cmd-up config)}
+  down         {:doc "Stop all services"
+                :task (l/cmd-down config)}
+  status       {:doc "Show running services"
+                :task (l/cmd-status config)}
+  plan         {:doc "Show generated docker-compose.yml"
+                :task (l/cmd-plan config)}
+  logs         {:doc "Follow service logs"
+                :task (apply l/cmd-logs config *command-line-args*)}
+  run          {:doc "Run an integration"
+                :override-builtin true
+                :task (l/cmd-run config (first *command-line-args*))}
+  integrations {:doc "List available integrations"
+                :task (l/cmd-list-integrations config)}
+  schedule     {:doc "Manage cron (show|install|remove)"
+                :task (l/cmd-schedule config (first *command-line-args*))}}}

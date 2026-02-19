@@ -3,7 +3,7 @@
   (:require [clojure.test :refer [deftest is testing run-tests]]))
 
 ;; Load lab namespace
-(load-file "lab")
+(load-file "lab.bb")
 
 (deftest service->compose-test
   (testing "basic service conversion"

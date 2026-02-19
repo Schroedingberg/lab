@@ -6,7 +6,7 @@
             [cheshire.core :as json]))
 
 ;; Load lab namespace
-(load-file "lab")
+(load-file "lab.bb")
 
 (defn docker-available? []
   (try
