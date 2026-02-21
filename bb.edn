@@ -21,4 +21,7 @@
   integrations {:doc "List available integrations"
                 :task (l/cmd-list-integrations config)}
   schedule     {:doc "Manage cron (show|install|remove)"
-                :task (l/cmd-schedule config (first *command-line-args*))}}}
+                :task (l/cmd-schedule config (first *command-line-args*))}
+  test         {:doc "Run tests (unit|integration|schedule|e2e|all)"
+                :override-builtin true
+                :task (l/cmd-test (or (first *command-line-args*) "unit"))}}}

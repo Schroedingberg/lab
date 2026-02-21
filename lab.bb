@@ -257,6 +257,9 @@
                    [(str "# lab:" (name k))
                     (str (:schedule v) " cd " dir " && ./lab run " (name k))])))))
 
+(def lab-crontab-file "data/lab-crontab")
+(def crontab-backup-file "data/crontab.backup")
+
 (defn get-crontab
   "Get current user crontab, empty string if none"
   []
@@ -276,6 +279,21 @@
          (remove (fn [line] (and line (re-find #"&& \./lab run " line))))
          (str/join "\n"))))
 
+(defn ensure-backup!
+  "Backup original crontab if not already backed up.
+   Returns the non-lab entries to merge with."
+  []
+  (if (fs/exists? crontab-backup-file)
+    ;; Already have backup - read it
+    (str/trim (slurp crontab-backup-file))
+    ;; First time - backup current crontab (without any lab entries)
+    (let [current (get-crontab)
+          cleaned (remove-lab-entries current)]
+      (fs/create-dirs "data")
+      (spit crontab-backup-file cleaned)
+      (println (str "  Backed up original crontab to " crontab-backup-file))
+      (str/trim cleaned))))
+
 (defn cmd-schedule [config subcmd]
   (let [entries (generate-crontab-entries config)]
     (case subcmd
@@ -286,24 +304,38 @@
 
       "install"
       (if (seq entries)
-        (let [current (get-crontab)
-              cleaned (remove-lab-entries current)
-              new-crontab (str (str/trim cleaned)
-                               (when (seq (str/trim cleaned)) "\n")
-                               (str/join "\n" entries) "\n")]
+        (let [;; Save lab entries to separate file for transparency
+              lab-entries-str (str/join "\n" entries)
+              _ (fs/create-dirs "data")
+              _ (spit lab-crontab-file lab-entries-str)
+              ;; Get non-lab entries from backup (creating backup if needed)
+              original-entries (ensure-backup!)
+              ;; Merge: original + lab entries
+              new-crontab (str (when (seq original-entries)
+                                 (str original-entries "\n"))
+                               lab-entries-str "\n")]
           (shell {:in new-crontab} "crontab" "-")
+          (println (str "Saved lab entries to " lab-crontab-file))
           (println "Installed crontab entries:")
           (doseq [line entries] (println (str "  " line))))
         (println "No scheduled integrations to install"))
 
       "remove"
-      (let [current (get-crontab)
-            cleaned (remove-lab-entries current)]
-        (if (= current cleaned)
-          (println "No lab entries found in crontab")
-          (do
-            (shell {:in (str cleaned "\n")} "crontab" "-")
-            (println "Removed lab entries from crontab"))))
+      (if (fs/exists? crontab-backup-file)
+        ;; Restore from backup
+        (let [original (slurp crontab-backup-file)]
+          (shell {:in (str original "\n")} "crontab" "-")
+          (fs/delete-if-exists lab-crontab-file)
+          (println "Restored original crontab from backup"))
+        ;; No backup - remove lab entries from current crontab  
+        (let [current (get-crontab)
+              cleaned (remove-lab-entries current)]
+          (if (= current cleaned)
+            (println "No lab entries found in crontab")
+            (do
+              (shell {:in (str cleaned "\n")} "crontab" "-")
+              (fs/delete-if-exists lab-crontab-file)
+              (println "Removed lab entries from crontab")))))
 
       ;; default
       (do
@@ -311,4 +343,40 @@
         (println "  show    - Print crontab entries (dry run)")
         (println "  install - Install entries to crontab")
         (println "  remove  - Remove lab entries from crontab")))))
+
+;; =============================================================================
+;; Testing
+;; =============================================================================
+
+(def test-suites
+  {"unit"        "test/unit_test.clj"
+   "integration" "test/integration_test.clj"
+   "schedule"    "test/schedule_test.clj"
+   "e2e"         "test/e2e_test.clj"
+   "meal-prep"   "test/e2e_meal_prep_test.clj"})
+
+(defn run-test-suite [name]
+  (if-let [path (get test-suites name)]
+    (if (fs/exists? path)
+      (do
+        (println "")
+        (println (str "=== Running " name " tests ==="))
+        (let [result (shell {:continue true} "bb" path)]
+          (zero? (:exit result))))
+      (do
+        (println (str "Test file not found: " path))
+        false))
+    (do
+      (println (str "Unknown test suite: " name))
+      (println (str "Available: " (str/join ", " (keys test-suites))))
+      false)))
+
+(defn cmd-test [suite]
+  (let [success?
+        (if (= suite "all")
+          (every? true? (map run-test-suite ["unit" "integration" "schedule" "e2e"]))
+          (run-test-suite suite))]
+    (if success?
+      (do (println "") (println "All tests passed!"))
+      (System/exit 1))))
 

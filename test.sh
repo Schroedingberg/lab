@@ -18,6 +18,9 @@ case "${1:-unit}" in
     integration)
         run_test integration
         ;;
+    schedule)
+        run_test schedule
+        ;;
     e2e)
         run_test e2e
         ;;
@@ -29,10 +32,11 @@ case "${1:-unit}" in
     all)
         run_test unit
         run_test integration
+        run_test schedule
         run_test e2e
         ;;
     *)
-        echo "Usage: $0 [unit|integration|e2e|meal-prep|all]"
+        echo "Usage: $0 [unit|integration|schedule|e2e|meal-prep|all]"
         exit 1
         ;;
 esac
